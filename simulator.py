@@ -8,7 +8,7 @@ import subprocess
 import re
 import time
 import random
-from threading import Thread
+from threading import Thread, Event
 
 global lock
 lock = threading.Lock()
@@ -96,11 +96,12 @@ class Display():
             y_pix = int((self._height - target.y) * self.SCALE_FACTOR) + self.BORDER_PX
             x_pix = int(((self._width / 2.0) + target.x) * self.SCALE_FACTOR) + self.BORDER_PX
             pygame.draw.circle(self.screen, target.color, (x_pix, y_pix), 12, 3)
+            font = pygame.font.SysFont("Arial", 16)
 
         pygame.display.update()
         pygame.display.flip()
 
-    def display_winners(self, winners):
+    def display_winners(self, winners, robots):
 
         message = winners[0].name
         if len(winners) > 1:
@@ -114,11 +115,20 @@ class Display():
         self.display_grid()
         
         font = pygame.font.SysFont("Arial", 60)
+        font_score = pygame.font.SysFont("Arial", 30)
 
         # render text
         y = int((self._height / 2) * self.SCALE_FACTOR) + self.BORDER_PX
         x = 200
         self.screen.blit(font.render(message, 1, (255, 255, 255)), (x, y))
+
+        count = 0
+        for robot in robots:
+            y = int((self._height / 2) * self.SCALE_FACTOR) + self.BORDER_PX + 80 + count * 50
+            x = 200
+            self.screen.blit(font_score.render('{} : {} pts'.format(robot.name, robot.score), 1, robot.color), (x, y))
+            count += 1
+
         pygame.display.update()
         pygame.display.flip()
 
@@ -203,7 +213,10 @@ class Robot(Thread):
         self._y = self._y + (delta_longitudinal * math.sin(self._heading))
 
     def run(self):
-        self._program(self, self._targets)
+        try:
+            self._program(self, self._targets)
+        except Exception as e:
+            print "{} program exited ({})".format(self._name, e.message)
 
     def step(self):
 
@@ -267,8 +280,20 @@ class Robot(Thread):
 
     def wait(self):
         time.sleep(2.0 * self._period)
-        while self.is_moving() and self._running:
-            time.sleep(self._period)
+        while self.is_moving():
+            self.wait_sec(self._period)
+
+    def set_speeds(self, longitudinal, angular):
+        lock.acquire()
+        self._longitudinal_command = longitudinal if longitudinal < Robot.LONGITUDINAL_MAX_SPEED else Robot.LONGITUDINAL_MAX_SPEED
+        self._longitudinal_position_setpoint = 0.0
+        self._longitudinal_max_speed = self._longitudinal_command
+        self._longitudinal_position_control = False
+        self._angular_command = angular if angular < Robot.ANGULAR_MAX_SPEED else Robot.ANGULAR_MAX_SPEED
+        self._angular_max_speed = self._angular_command
+        self._angular_position_setpoint = 0.0
+        self._angular_position_control = False
+        lock.release()
 
     def translate(self, distance, speed = 2.0):
         lock.acquire()
@@ -301,6 +326,16 @@ class Robot(Thread):
     def rotate_and_wait(self, angle, speed = 8.0):
         self.rotate(angle, speed)
         self.wait()
+
+    def wait_sec(self, duration):
+        while duration > 0.0:
+            lock.acquire()
+            running = self._running
+            lock.release()
+            if running == False:
+                raise Exception("Execution stopped by user")
+            time.sleep(0.1)
+            duration = duration - 0.1
 
     def start(self, targets):
         self._running = True
@@ -402,7 +437,7 @@ class Map:
 
                 if self.remaining_targets() == 0 and len(self._targets) > 0:
                     winners = self.find_winners()
-                    self._display.display_winners(winners)
+                    self._display.display_winners(winners, self._robots)
                 else:
                     self._display.update(self._robots, self._targets)
 
